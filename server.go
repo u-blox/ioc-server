@@ -41,6 +41,11 @@ func main() {
     var prevIntervalTime time.Time
     var bytesDuringInterval int
     var timeNow time.Time
+    var sequenceNumber int
+    var prevSequenceNumber int = 0
+    var timestamp int
+    var alarm string
+    var rate float64 = 0
     line := make([]byte, 1024)
 
     // Deal with the command-line parameters
@@ -56,20 +61,28 @@ func main() {
             pServer, err := net.ListenUDP("udp", pLocalUdpAddr)
             if err == nil {
                 for numBytesIn, _, readErr = pServer.ReadFromUDP(line); (readErr == nil) && (numBytesIn > 0); numBytesIn, _, readErr = pServer.ReadFromUDP(line) {
-                    numPackets++;
+                    numPackets++
+                    sequenceNumber = int(line[2]) << 8 + int(line[3])
+                    timestamp = (int(line[4]) << 24) + (int(line[5]) << 16) + (int(line[6]) << 8) + int(line[7])
+                    alarm = ""
+                    if (prevSequenceNumber != 0) && (sequenceNumber != prevSequenceNumber + 1) {
+                        alarm = "*"
+                    }
+                    fmt.Printf("\rProtocol %d, seq %d%s, time %3.3f, throughput %3.3f kbits/s.                ",
+                               line[0], sequenceNumber, alarm, float64(timestamp) / 1000, rate)
                     timeNow = time.Now();
                     if (timeNow.Sub(prevPacketTime) < averagingInterval) {
                         if (timeNow.Sub(prevIntervalTime) < averagingInterval) {
                             bytesDuringInterval += numBytesIn;
                         } else {
-                            rate := float64(bytesDuringInterval) * 8 / timeNow.Sub(prevIntervalTime).Seconds() / 1000
+                            rate = float64(bytesDuringInterval) * 8 / timeNow.Sub(prevIntervalTime).Seconds() / 1000
                             bytesDuringInterval = numBytesIn
                             prevIntervalTime = timeNow
-                            fmt.Printf("\rThroughput %3.3f kbits/s.", rate)
                         }
                     } else {
                         bytesDuringInterval = 0
                     }
+                    prevSequenceNumber = sequenceNumber;
                     prevPacketTime = timeNow
                 }    
                 if readErr != nil {
