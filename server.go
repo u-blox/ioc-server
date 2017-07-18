@@ -10,7 +10,7 @@ import (
 )
 
 // This is the Internet of Chuffs, server side.
-// The input stream from the IoC client is 24-bit PCM
+// The input stream from the IoC client is 16-bit PCM
 // audio sampled at 16 kHz, arriving in 20 ms blocks
 // that include a sequence number and timestamp.
 // This is written to a buffer and then LAME
@@ -18,15 +18,11 @@ import (
 // an MP3 stream that is sent out over RTP.
 //
 // A possible LAME command line is:
-// lame -V2 -r -s 16000 -m m --bitwidth 24 <input file> <output file>
+// lame -V2 -r -s 16000 -m m -x --bitwidth 16 <input file> <output file>
 
 //--------------------------------------------------------------------
 // Types
 //--------------------------------------------------------------------
-
-const URTP_HEADER_SIZE int = 8
-const URTP_SAMPLE_SIZE int = 3
-const URTP_BODY_SIZE int = URTP_SAMPLE_SIZE * 160
 
 //--------------------------------------------------------------------
 // Variables
