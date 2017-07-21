@@ -1,3 +1,15 @@
+/* Datagram processing function for the Internet of Chuffs server.
+ *
+ * Copyright (C) u-blox Melbourn Ltd
+ * u-blox Melbourn Ltd, Melbourn, UK
+ *
+ * All rights reserved.
+ *
+ * This source file is the sole property of u-blox Melbourn Ltd.
+ * Reproduction or utilization of this source in whole or part is
+ * forbidden without the written consent of u-blox Melbourn Ltd.
+ */
+
 package main
 
 import (
@@ -6,7 +18,7 @@ import (
     "os"
     "flag"
     "log"
-    "time"
+//    "encoding/hex"
 )
 
 // This is the Internet of Chuffs, server side.
@@ -24,12 +36,33 @@ import (
 // Types
 //--------------------------------------------------------------------
 
+// Struct to hold a URTP datagram
+type UrtpDatagram struct {
+    SequenceNumber  uint16
+    Timestamp       uint32
+    Audio           *[]int16
+}
+
 //--------------------------------------------------------------------
 // Variables
 //--------------------------------------------------------------------
 
-// Averaging interval for the throughput calculation
-var averagingInterval time.Duration = time.Second * 10
+// The duration of a block of incoming audio in ms
+const BLOCK_DURATION_MS int = 20
+
+// The sampling frequency of the incoming audio
+const SAMPLING_FREQUENCY int = 16000
+
+// The number of samples per block
+const SAMPLES_PER_BLOCK int = SAMPLING_FREQUENCY * BLOCK_DURATION_MS / 1000
+
+// The URTP datagram dimensions
+const URTP_HEADER_SIZE int = 8
+const URTP_SAMPLE_SIZE int = 2
+const URTP_DATAGRAM_SIZE int = URTP_HEADER_SIZE + SAMPLES_PER_BLOCK * URTP_SAMPLE_SIZE
+
+// File to write audio output to
+var fileHandle *os.File
 
 // Command-line flags
 var port = flag.String ("p", "", "the port number to listen on.");
@@ -45,24 +78,14 @@ var Usage = func() {
 
 // Entry point
 func main() {
-    var numPackets int
     var numBytesIn int
-    var prevPacketTime time.Time
-    var prevIntervalTime time.Time
-    var bytesDuringInterval int
-    var timeNow time.Time
-    var sequenceNumber int
-    var prevSequenceNumber int = 0
-    var timestamp int
-    var sum int
-    var alarm string
-    var rate float64 = 0
     var localUdpAddr *net.UDPAddr
     var server *net.UDPConn
-    var fileHandle *os.File
     var err error
-    line := make([]byte, 1024)
+    line := make([]byte, URTP_DATAGRAM_SIZE)
 
+    log.SetOutput(os.Stdout)
+    
     // Deal with the command-line parameters
     flag.Parse()
     
@@ -76,41 +99,40 @@ func main() {
         fmt.Printf(".\n");
         
         if (err == nil) {
+            defer fileHandle.Close()
             // Set up the server
             localUdpAddr, err = net.ResolveUDPAddr("udp", ":" + *port)
             if (err == nil) && (localUdpAddr != nil) {
+                // Begin listening
                 server, err = net.ListenUDP("udp", localUdpAddr)
                 if err == nil {
+                    // Read UDP packets
                     for numBytesIn, _, err = server.ReadFromUDP(line); (err == nil) && (numBytesIn > 0); numBytesIn, _, err = server.ReadFromUDP(line) {
-                        numPackets++
-                        sequenceNumber = int(line[2]) << 8 + int(line[3])
-                        timestamp = (int(line[4]) << 24) + (int(line[5]) << 16) + (int(line[6]) << 8) + int(line[7])
-                        _, err = fileHandle.Write(line[8:numBytesIn])
-                        sum = 0;
-                        for _, y := range line[8:numBytesIn] {
-                            sum += int(y);
-                        }
-                        alarm = ""
-                        if (prevSequenceNumber != 0) && (sequenceNumber != prevSequenceNumber + 1) {
-                            alarm = "*"
-                        }
-                        fmt.Printf("\rProtocol %d, seq %d%s, time %3.3f, length %d byte(s), sum %d, throughput %3.3f kbits/s.                ",
-                                   line[0], sequenceNumber, alarm, float64(timestamp) / 1000, numBytesIn, sum, rate)
-                        timeNow = time.Now();
-                        if (timeNow.Sub(prevPacketTime) < averagingInterval) {
-                            if (timeNow.Sub(prevIntervalTime) < averagingInterval) {
-                                bytesDuringInterval += numBytesIn;
-                            } else {
-                                rate = float64(bytesDuringInterval) * 8 / timeNow.Sub(prevIntervalTime).Seconds() / 1000
-                                bytesDuringInterval = numBytesIn
-                                prevIntervalTime = timeNow
+                        log.Printf("UDP packet of size %d byte(s) received.\n", numBytesIn)
+//                        fmt.Printf("%s\n", hex.Dump(line[:numBytesIn]))
+                        if (numBytesIn >= URTP_HEADER_SIZE) {
+                            // Populate a URTP datagram with the data
+                            urtpDatagram := new(UrtpDatagram)
+                            log.Printf("URTP header:\n")
+                            urtpDatagram.SequenceNumber = uint16(line[2]) << 8 + uint16(line[3])
+                            log.Printf("  sequence number %d\n", urtpDatagram.SequenceNumber)
+                            urtpDatagram.Timestamp = (uint32(line[4]) << 24) + (uint32(line[5]) << 16) + (uint32(line[6]) << 8) + uint32(line[7])
+                            log.Printf("  timestamp       %d\n", urtpDatagram.Timestamp)
+                            if (numBytesIn > URTP_HEADER_SIZE) {
+                                audio := make([]int16, (numBytesIn - URTP_HEADER_SIZE) / URTP_SAMPLE_SIZE)
+                                // Copy in the bytes
+                                x := URTP_HEADER_SIZE
+                                for y := range audio {
+                                    audio[y] = (int16(line[x]) << 8) + int16(line[x + 1])
+                                    x += 2 
+                                }
+                                urtpDatagram.Audio = &audio
                             }
-                        } else {
-                            bytesDuringInterval = 0
+                            log.Printf("URTP samples %d\n", len(*urtpDatagram.Audio))
+                            // Send the data to the processing channel
+                            processDatagramsChannel <- urtpDatagram
                         }
-                        prevSequenceNumber = sequenceNumber;
-                        prevPacketTime = timeNow
-                    }    
+                    }
                     if err != nil {
                         log.Printf("Error reading from port %v (%s).\n", localUdpAddr, err.Error())
                     } else {
