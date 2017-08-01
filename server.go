@@ -18,6 +18,7 @@ import (
     "os"
     "flag"
     "log"
+    "github.com/u-blox/ioc-server/lame"
 //    "encoding/hex"
 )
 
@@ -29,9 +30,6 @@ import (
 // (lame.sourceforge.net) is employed to produce
 // an MP3 stream that is sent out over RTP.
 //
-// A possible LAME command line is:
-// lame -V2 -r -s 16000 -m m -x --bitwidth 16 <input file> <output file>
-
 //--------------------------------------------------------------------
 // Types
 //--------------------------------------------------------------------
@@ -61,12 +59,23 @@ const URTP_HEADER_SIZE int = 8
 const URTP_SAMPLE_SIZE int = 2
 const URTP_DATAGRAM_SIZE int = URTP_HEADER_SIZE + SAMPLES_PER_BLOCK * URTP_SAMPLE_SIZE
 
-// File to write audio output to
-var fileHandle *os.File
+// File for MP3 audio output
+var mp3Handle *os.File
+
+// File for PCM audio output
+var pcmHandle *os.File
+
+// File for logging output
+var logHandle *os.File
+
+// The lame MP3 encoder
+var mp3Writer *lame.LameWriter
 
 // Command-line flags
 var port = flag.String ("p", "", "the port number to listen on.");
-var file = flag.String ("f", "", "a filename to which the received stream should be written (will be truncated if it already exists).");
+var mp3Name = flag.String ("o", "", "file for MP3 output (will be truncated if it already exists).");
+var pcmName = flag.String ("r", "", "file for 16 bit PCM output (will be truncated if it already exists).");
+var logName = flag.String ("l", "", "file for log output (will be truncated if it already exists).");
 var Usage = func() {
     fmt.Fprintf(os.Stderr, "\n%s: run the Internet of Chuffs server.  Usage:\n", os.Args[0])
         flag.PrintDefaults()
@@ -84,22 +93,48 @@ func main() {
     var err error
     line := make([]byte, URTP_DATAGRAM_SIZE)
 
-    log.SetOutput(os.Stdout)
-    
     // Deal with the command-line parameters
     flag.Parse()
     
     if *port != "" {
         // Say what we're doing
-        fmt.Printf("Waiting to receiving UDP packets on port %s", *port)
-        if (*file != "") {
-            fmt.Printf(" and writing them to file %s", *file)        
-            fileHandle, err = os.Create(*file);
+        fmt.Printf("Waiting for UDP packets on port %s", *port)
+        if *mp3Name != "" {
+            fmt.Printf(", MP3 in %s", *mp3Name)        
+            mp3Handle, err = os.Create(*mp3Name);
+        }
+        if (*pcmName != "") && (err == nil) {
+            fmt.Printf(", 16-bit PCM in %s", *pcmName)        
+            pcmHandle, err = os.Create(*pcmName);
+        }
+        if (*logName != "") && (err == nil) {
+            fmt.Printf(", log in %s", *logName)        
+            logHandle, err = os.Create(*logName);
         }
         fmt.Printf(".\n");
         
-        if (err == nil) {
-            defer fileHandle.Close()
+        if err == nil {
+            defer mp3Handle.Close()
+            defer pcmHandle.Close()
+            defer logHandle.Close()
+            log.SetOutput(logHandle)
+            
+            // Initialise the MP3 encoder.  This is equivalent to:
+            // lame -V2 -r -s 16000 -m m --bitwidth 16 <input file> <output file>
+            if mp3Handle != nil {
+                mp3Writer = lame.NewWriter(mp3Handle)
+                mp3Writer.Encoder.SetInSamplerate(SAMPLING_FREQUENCY)
+                mp3Writer.Encoder.SetNumChannels(1)
+                mp3Writer.Encoder.SetMode(lame.MONO)
+                mp3Writer.Encoder.SetVBR(lame.VBR_DEFAULT)
+                mp3Writer.Encoder.SetVBRQuality(2)
+                // Note: bit depth defaults to 16
+                if mp3Writer.Encoder.InitParams() < 0 {
+                    fmt.Printf("Unable to initialise Lame for MP3 output.\n")
+                    os.Exit(-1)
+                }
+            }
+        
             // Set up the server
             localUdpAddr, err = net.ResolveUDPAddr("udp", ":" + *port)
             if (err == nil) && (localUdpAddr != nil) {
@@ -144,9 +179,16 @@ func main() {
             } else {
                 log.Printf("'%s' is not a valid UDP address (%s).\n", *port, err.Error())
             }
-            fileHandle.Close()
         } else {
-            fmt.Printf("Unable to open file %s (%s).\n", *file, err.Error())
+            if (*mp3Name != "") && (mp3Handle == nil) {
+                fmt.Printf("Unable to open %s (%s) for MP3 output.\n", *mp3Name, err.Error())
+            }
+            if (*pcmName != "") && (pcmHandle == nil) {
+                fmt.Printf("Unable to open %s (%s) for PCM output.\n", *pcmName, err.Error())
+            }
+            if (*logName != "") && (logHandle == nil) {
+                fmt.Printf("Unable to open %s (%s) for logging output.\n", *logName, err.Error())
+            }
             flag.PrintDefaults()
             os.Exit(-1)
         }                

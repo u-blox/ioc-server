@@ -18,7 +18,6 @@ import (
     "time"
     "container/list"
     "bytes"
-//    "github.com/u-blox/ioc-server/lame"
 //    "encoding/hex"
 )
 
@@ -121,7 +120,7 @@ func processDatagram(datagram * UrtpDatagram, savedDatagramList * list.List) {
         
     // DEBUG STUFF FROM HERE ON    
     
-    log.Printf("Seq %d%s, time %3.3f, length %d byte(s), sum %d, throughput %3.3f kbits/s\n",
+    log.Printf("Seq %d%s, time %3.3f, length %d sample(s), sum %d, throughput %3.3f kbits/s\n",
                datagram.SequenceNumber, alarm, float64(datagram.Timestamp) / 1000, len(*datagram.Audio), sum, rate)
     timeNow = time.Now();
     bytesDuringInterval += len(*datagram.Audio) * URTP_SAMPLE_SIZE
@@ -142,10 +141,19 @@ func encodeOutput () {
         x, err = rawAudio.Read(buffer)
         if x > 0 {
             log.Printf("Encoding %d byte(s) into the output...\n", x)
-            if fileHandle != nil {
-                fileHandle.Write(buffer[:x])
-            }
 //            fmt.Printf("%s\n", hex.Dump(buffer[:x]))
+            if mp3Writer != nil {
+                _, err = mp3Writer.Write(buffer[:x])
+                if err != nil {
+                    log.Printf("Unable to encode MP3.\n")
+                }
+            }
+            if pcmHandle != nil {
+                _, err = pcmHandle.Write(buffer[:x])
+                if err != nil {
+                    log.Printf("Unable to write to PCM file %s.\n", *pcmName)
+                }
+            }
         }
     }
 }
@@ -157,10 +165,10 @@ func operateProcess() {
     
     processDatagramsChannel = channel
     
-    fmt.Printf("Datagram processing channel created and now being serviced.\n")
-    
     // Initialise the linked list of datagrams
     newDatagramList.Init()
+    
+    fmt.Printf("Datagram processing channel created and now being serviced.\n")
     
     // Timed function that processes received datagrams and feeds the output stream
     go func() {

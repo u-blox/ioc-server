@@ -1,7 +1,7 @@
 package lame
 
 /*
-#cgo LDFLAGS: -L . -lmp3lame
+#cgo LDFLAGS: -L. -lmp3lame
 #include "lame.h"
 */
 import "C"
@@ -21,6 +21,16 @@ const (
 	NOT_SET       = C.NOT_SET
 	MAX_INDICATOR = C.MAX_INDICATOR
 	BIT_DEPTH     = 16
+)
+
+const (
+    VBR_OFF            = C.vbr_off
+    VBR_MT             = C.vbr_mt
+    VBR_RH             = C.vbr_rh
+    VBR_ABR            = C.vbr_abr
+    VBR_MTRH           = C.vbr_mtrh
+    VBR_MAX_INDICATOR  = C.vbr_max_indicator
+    VBR_DEFAULT        = C.vbr_default
 )
 
 type Encoder struct {
@@ -50,6 +60,14 @@ func (e *Encoder) SetBitrate(bitRate int) {
 
 func (e *Encoder) SetMode(mode C.MPEG_mode) {
 	C.lame_set_mode(e.handle, mode)
+}
+
+func (e *Encoder) SetVBR(mode C.vbr_mode) {
+	C.lame_set_VBR(e.handle, mode)
+}
+
+func (e *Encoder) SetVBRQuality(quality float32) {
+	C.lame_set_VBR_quality(e.handle, C.float(quality))
 }
 
 func (e *Encoder) SetQuality(quality int) {
@@ -113,9 +131,10 @@ func (e *Encoder) Encode(buf []byte) []byte {
 	cBuf := (*C.short)(unsafe.Pointer(&buf[0]))
 	cOut := (*C.uchar)(unsafe.Pointer(&out[0]))
 
-	bytesOut := C.int(C.lame_encode_buffer_interleaved(
+	bytesOut := C.int(C.lame_encode_buffer(
 		e.handle,
 		cBuf,
+		nil,
 		C.int(numSamples),
 		cOut,
 		C.int(estimatedSize),
