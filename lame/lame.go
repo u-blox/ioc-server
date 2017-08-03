@@ -2,7 +2,7 @@ package lame
 
 /*
 #cgo LDFLAGS: -L. -lmp3lame
-#include "lame.h"
+#include "lame/lame.h"
 */
 import "C"
 
