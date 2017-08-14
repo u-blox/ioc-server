@@ -17,6 +17,7 @@ import (
     "log"
     "time"
     "os"
+    "io/ioutil"
     "container/list"
     "bytes"
     "github.com/u-blox/ioc-server/lame"
@@ -32,6 +33,9 @@ const NUM_PROCESSED_DATAGRAMS int = 1
 
 // Guard against silly sequence number gaps
 const MAX_GAP_FILL_MILLISECONDS int = 500
+
+// The amount of audio in each MP3 output file
+const MAX_MP3_FILE_LENGTH time.Duration = time.Second * 5
 
 //--------------------------------------------------------------------
 // Variables
@@ -50,7 +54,6 @@ var processedDatagramList = list.New()
 var pcmAudio bytes.Buffer
 
 // An audio buffer to hold MP3 encoded samples
-// Note: shared with the HTTP streamer
 var mp3Audio bytes.Buffer
 
 // Debug stuff
@@ -62,6 +65,18 @@ var averagingInterval time.Duration = time.Second * 10
 //--------------------------------------------------------------------
 // Functions
 //--------------------------------------------------------------------
+
+// Open an MP3 file
+func openMp3File(dirName string) *os.File {    
+    handle, err := ioutil.TempFile (dirName, "mp3_")
+    if err == nil {
+        log.Printf("Opened \"%s\" for MP3 output.\n", handle.Name())
+    } else {
+        log.Printf("Unable to create temporary file for MP3 output in directory \"%s\".\n", dirName)
+    }
+    
+    return handle
+}
 
 // Handle a gap of a given number of samples in the input data
 func handleGap(gap int, previousDatagram * UrtpDatagram) {
@@ -137,14 +152,16 @@ func processDatagram(datagram * UrtpDatagram, savedDatagramList * list.List) {
 }
 
 // Encode the output stream
-func encodeOutput (mp3Writer *lame.LameWriter, pcmHandle *os.File) {
+func encodeOutput (mp3Writer *lame.LameWriter, pcmHandle *os.File) time.Duration {
     var err error
     var x int
+    var length time.Duration
     buffer := make([]byte, 1000)
     
     for err == nil {
         x, err = pcmAudio.Read(buffer)
         if x > 0 {
+            length = time.Duration(x / URTP_SAMPLE_SIZE * 1000000 / SAMPLING_FREQUENCY) * time.Microsecond
             log.Printf("Encoding %d byte(s) into the output...\n", x)
 //            log.Printf("%s\n", hex.Dump(buffer[:x]))
             if mp3Writer != nil {
@@ -160,12 +177,17 @@ func encodeOutput (mp3Writer *lame.LameWriter, pcmHandle *os.File) {
                 }
             }
         }
-    }    
+    }
+    
+    return length
 }
 
 // Do the processing; this function should never return
-func operateAudioProcessing(pcmHandle *os.File) {
+func operateAudioProcessing(pcmHandle *os.File, mp3Dir string) {
     var mp3Writer *lame.LameWriter
+    var mp3Handle *os.File
+    var err error
+    var mp3Length time.Duration
     var channel = make(chan interface{})
     processTicker := time.NewTicker(time.Duration(BLOCK_DURATION_MS) * time.Millisecond)
     
@@ -188,6 +210,13 @@ func operateAudioProcessing(pcmHandle *os.File) {
         os.Exit(-1)
     }
     
+    // Create the first mp3 output file
+    mp3Handle = openMp3File(mp3Dir)
+    if mp3Handle == nil {
+        fmt.Fprintf(os.Stderr, "Unable to create temporary file for MP3 output in directory \"%s\" (permissions?).\n", mp3Dir)
+        os.Exit(-1)
+    }
+    
     fmt.Printf("Audio processing channel created and now being serviced.\n")
     
     // Timed function that processes received datagrams and feeds the output stream
@@ -198,7 +227,7 @@ func operateAudioProcessing(pcmHandle *os.File) {
             thingProcessed := false
             for newElement := newDatagramList.Front(); newElement != nil; newElement = newElement.Next() {
                 processDatagram(newElement.Value.(*UrtpDatagram), processedDatagramList)
-                log.Printf("%d bytes in the outgoing audio buffer.\n", pcmAudio.Len())
+                log.Printf("%d byte(s) in the outgoing audio buffer.\n", pcmAudio.Len())
                 log.Printf("Moving datagram from the new list to the processed list...\n")
                 processedDatagramList.PushFront(newElement.Value)
                 thingProcessed = true
@@ -216,8 +245,28 @@ func operateAudioProcessing(pcmHandle *os.File) {
                 }
             }
             // Always need to encode something into the output stream
-            encodeOutput(mp3Writer, pcmHandle);
-        }        
+            mp3Length += encodeOutput(mp3Writer, pcmHandle);            
+            // If enough time has passed, write the output to file and
+            // tell the audio output channel about it
+            if mp3Length >= MAX_MP3_FILE_LENGTH {
+                if mp3Handle != nil {
+                    log.Printf("Writing %d millisecond(s) of MP3 audio to \"%s\" and closing the file.\n", mp3Length / time.Millisecond, mp3Handle.Name())
+                    _, err = mp3Audio.WriteTo(mp3Handle)
+                    mp3Handle.Close()
+                    if err == nil {
+                        // Let the audio output channel know of the new audio file
+                        mp3AudioFile := new(Mp3AudioFile)
+                        mp3AudioFile.filePath = mp3Handle.Name()
+                        mp3AudioFile.duration = mp3Length
+                        MediaControlChannel <- mp3AudioFile
+                    } else {
+                        log.Printf("Error writing to \"%s\" (%s).\n", mp3Handle.Name(), err.Error())
+                    }
+                }
+                mp3Length = time.Duration(0);
+                mp3Handle = openMp3File(mp3Dir)
+            }
+        }
     }()
     
     // Process datagrams received on the channel

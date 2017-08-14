@@ -18,12 +18,19 @@ import (
     "time"
     "net/http"
     "os"
+    "container/list"
     "github.com/gorilla/mux"
 )
 
 //--------------------------------------------------------------------
 // Types 
 //--------------------------------------------------------------------
+
+// Indication that a new MP3 audio file is available
+type Mp3AudioFile struct {
+    filePath string
+    duration time.Duration
+}
 
 // Open a stream to a HTTP client
 type OpenStream struct {
@@ -36,6 +43,9 @@ type OpenStream struct {
 
 // The control channel for media streaming out to users
 var MediaControlChannel chan<- interface{}
+
+// List of output mp3 files
+var mp3FileList = list.New()
 
 //--------------------------------------------------------------------
 // Functions
@@ -58,6 +68,20 @@ func streamHandler(out http.ResponseWriter, in *http.Request) {
     }
 }
 
+// Empty the MP3 file list, deleting the files as it goes
+func clearMp3FileList() {
+    log.Printf("Clearing MP3 file list...\n")
+    for newElement := newDatagramList.Front(); newElement != nil; newElement = newElement.Next() {
+        filePath := newElement.Value.(*Mp3AudioFile).filePath        
+        log.Printf("Deleting file \"%s\"...\n", filePath)
+        err:= os.Remove(filePath)
+        if err != nil {
+            log.Printf("Unable to delete \"%s\".\n", filePath)
+        }
+        newDatagramList.Remove(newElement)
+    }
+}
+
 // Start HTTP server for streaming output; this function should never return
 func operateAudioOut(port string) {
     var channel = make(chan interface{})
@@ -66,6 +90,9 @@ func operateAudioOut(port string) {
     
     MediaControlChannel = channel
     
+    // Initialise the linked list of MP3 output files
+    mp3FileList.Init()
+
     // Timed function to perform operations on the stream
     go func() {
         for _ = range streamTicker.C {            
@@ -77,12 +104,18 @@ func operateAudioOut(port string) {
         for cmd := range channel {
             switch message := cmd.(type) {
                 // Handle the media control messages
+                case *Mp3AudioFile:
+                {
+                    log.Printf("Adding new MP3 file \"%s\", duration %d millisecond(s), to the list...\n", message.filePath, int(message.duration / time.Millisecond))
+                    mp3FileList.PushBack(message)
+                }
                 case *OpenStream:
                 {
-                    log.Printf("Opening stream %s...\n", message.id)                    
+                    log.Printf("Opening stream \"%s\"...\n", message.id)                    
                 }
             }
         }
+        clearMp3FileList()
         fmt.Printf("HTTP streaming channel closed, stopping.\n")
     }()
     

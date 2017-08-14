@@ -42,8 +42,9 @@ var opts struct {
         In string `positional-arg-name:"input-port"`
         Out string `positional-arg-name:"output-port"`
     } `positional-args:"true" required:"yes"`
-    LogName string `short:"l" long:"logfile" description:"file for logging output (will be truncated if it already exists)."`
-    PcmName string `short:"p" long:"pcmfile" description:"file for 16 bit PCM output (will be truncated if it already exists)."`
+    Mp3Dir string `short:"m" long:"mp3dir" default:"." description:"directory where mp3 audio files will be stored (must exist)"`
+    LogName string `short:"l" long:"logfile" description:"file for logging output (will be truncated if it already exists)"`
+    PcmName string `short:"p" long:"pcmfile" description:"file for 16 bit PCM output (will be truncated if it already exists)"`
 }
 
 //--------------------------------------------------------------------
@@ -63,6 +64,7 @@ func cli() {
 func main() {
     var pcmHandle *os.File
     var logHandle *os.File
+    var stat os.FileInfo
     var err error
 
     // Handle the command line
@@ -85,7 +87,7 @@ func main() {
         defer pcmHandle.Close()
         
         // Run the audio processing loop
-        go operateAudioProcessing(pcmHandle)
+        go operateAudioProcessing(pcmHandle, opts.Mp3Dir)
         
         // Run the UDP server loop for incoming audio
         go operateAudioIn(opts.Ports.In)
