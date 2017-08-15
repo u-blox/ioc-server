@@ -29,13 +29,22 @@ import (
 // Indication that a new MP3 audio file is available
 type Mp3AudioFile struct {
     filePath string
+    timestamp time.Time
     duration time.Duration
+    usable bool
 }
 
 // Open a stream to a HTTP client
 type OpenStream struct {
     id string
 }
+
+//--------------------------------------------------------------------
+// Constants
+//--------------------------------------------------------------------
+
+// The age at which an MP3 file should no longer be used
+const MP3_MAX_AGE time.Duration = time.Minute
 
 //--------------------------------------------------------------------
 // Variables
@@ -86,7 +95,7 @@ func clearMp3FileList() {
 func operateAudioOut(port string) {
     var channel = make(chan interface{})
     var err error
-    streamTicker := time.NewTicker(time.Second)
+    streamTicker := time.NewTicker(time.Second * 5)
     
     MediaControlChannel = channel
     
@@ -95,7 +104,24 @@ func operateAudioOut(port string) {
 
     // Timed function to perform operations on the stream
     go func() {
-        for _ = range streamTicker.C {            
+        for _ = range streamTicker.C {
+            // Go through the file list and mark old files as unusable, attempting
+            // to delete them as we go 
+            for newElement := mp3FileList.Front(); newElement != nil; newElement = newElement.Next() {
+                if (newElement.Value.(*Mp3AudioFile).usable) && (time.Now().Sub(newElement.Value.(*Mp3AudioFile).timestamp) > MP3_MAX_AGE) {
+                    newElement.Value.(*Mp3AudioFile).usable = false;
+                    log.Printf ("MP3 file \"%s\", received at %s, now out of date (time now is %s).\n",
+                                newElement.Value.(*Mp3AudioFile).filePath, newElement.Value.(*Mp3AudioFile).timestamp.String(),
+                                time.Now().String())
+                }
+                if !newElement.Value.(*Mp3AudioFile).usable {
+                    if os.Remove(newElement.Value.(*Mp3AudioFile).filePath) == nil {
+                        log.Printf ("MP3 file \"%s\" successfully deleted and will be removed from the list.\n",
+                                    newElement.Value.(*Mp3AudioFile).filePath)
+                        mp3FileList.Remove(newElement)
+                    }
+                }
+            }
         }        
     }()
     

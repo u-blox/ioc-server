@@ -32,7 +32,7 @@ type UrtpDatagram struct {
 }
 
 //--------------------------------------------------------------------
-// Variables
+// Constants
 //--------------------------------------------------------------------
 
 // The duration of a block of incoming audio in ms

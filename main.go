@@ -42,7 +42,8 @@ var opts struct {
         In string `positional-arg-name:"input-port"`
         Out string `positional-arg-name:"output-port"`
     } `positional-args:"true" required:"yes"`
-    Mp3Dir string `short:"m" long:"mp3dir" default:"." description:"directory where mp3 audio files will be stored (must exist)"`
+    Mp3Dir string `short:"m" long:"mp3dir" default:"." description:"directory where MP3 audio files will be stored"`
+    ClearMp3Dir bool `short:"c" long:"clear" description:"clear the MP3 audio file directory before using it"`
     LogName string `short:"l" long:"logfile" description:"file for logging output (will be truncated if it already exists)"`
     PcmName string `short:"p" long:"pcmfile" description:"file for 16 bit PCM output (will be truncated if it already exists)"`
 }
@@ -64,7 +65,6 @@ func cli() {
 func main() {
     var pcmHandle *os.File
     var logHandle *os.File
-    var stat os.FileInfo
     var err error
 
     // Handle the command line
@@ -80,9 +80,24 @@ func main() {
         }        
     }    
     if (opts.PcmName != "") && (err == nil) {
-        log.Printf("Opening %s for raw PCM output.\n", opts.PcmName)        
+        log.Printf("Opening \"%s\" for raw PCM output.\n", opts.PcmName)        
         pcmHandle, err = os.Create(opts.PcmName);
     }
+    // Make sure the MP3 directory exists
+    if opts.Mp3Dir != "" {
+        _ = os.MkdirAll(opts.Mp3Dir, os.ModePerm)
+        if (opts.ClearMp3Dir) && (err == nil) {
+            log.Printf("Clearing directory \"%s\".\n", opts.Mp3Dir)
+            err1 := os.RemoveAll(opts.Mp3Dir)
+            if err1 == nil {
+                err1 = os.MkdirAll(opts.Mp3Dir, os.ModePerm)
+            }        
+            if err1 != nil {
+                log.Printf("Error while deleting and recreating directory (%s).\n", err1.Error())
+            }
+        }
+    } 
+    
     if err == nil {
         defer pcmHandle.Close()
         

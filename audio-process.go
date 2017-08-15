@@ -25,7 +25,7 @@ import (
 )
 
 //--------------------------------------------------------------------
-// Types 
+// Constants
 //--------------------------------------------------------------------
 
 // How big the processedDatagramsList can become
@@ -257,7 +257,9 @@ func operateAudioProcessing(pcmHandle *os.File, mp3Dir string) {
                         // Let the audio output channel know of the new audio file
                         mp3AudioFile := new(Mp3AudioFile)
                         mp3AudioFile.filePath = mp3Handle.Name()
+                        mp3AudioFile.timestamp = time.Now()
                         mp3AudioFile.duration = mp3Length
+                        mp3AudioFile.usable = true;
                         MediaControlChannel <- mp3AudioFile
                     } else {
                         log.Printf("Error writing to \"%s\" (%s).\n", mp3Handle.Name(), err.Error())
