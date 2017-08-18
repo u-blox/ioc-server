@@ -71,7 +71,11 @@ func (e *Encoder) SetVBRQuality(quality float32) {
 }
 
 func (e *Encoder) SetQuality(quality int) {
-	C.lame_set_quality(e.handle, C.int(quality))
+	 C.lame_set_quality(e.handle, C.int(quality))
+}
+
+func (e *Encoder) SetGenre(genre string) {
+	C.id3tag_set_genre(e.handle, C.CString(genre))
 }
 
 func (e *Encoder) InitParams() int {

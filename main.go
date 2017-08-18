@@ -66,6 +66,7 @@ func main() {
     var pcmHandle *os.File
     var logHandle *os.File
     var err error
+    var mp3Dir string
 
     // Handle the command line
     cli()
@@ -107,8 +108,15 @@ func main() {
         // Run the UDP server loop for incoming audio
         go operateAudioIn(opts.Ports.In)
         
+        // Remove any trailing "/" from the end of the MP3 directory name
+        if os.IsPathSeparator(opts.Mp3Dir[len(opts.Mp3Dir) - 1]) {
+            mp3Dir = opts.Mp3Dir[len(opts.Mp3Dir) - 1:]
+        } else {
+            mp3Dir = opts.Mp3Dir 
+        }
+        
         // Run the HTTP server for audio output (which should block)
-        operateAudioOut(opts.Ports.Out)
+        operateAudioOut(opts.Ports.Out, mp3Dir)
     } else {
         if (opts.PcmName != "") && (pcmHandle == nil) {
             fmt.Fprintf(os.Stderr, "Unable to open %s for raw PCM output (%s).\n", opts.PcmName, err.Error())
