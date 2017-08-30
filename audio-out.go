@@ -26,6 +26,7 @@ import (
     "bytes"
     "sync"
     "container/list"
+    "math"
 //    "github.com/gorilla/mux"
 )
 
@@ -40,6 +41,7 @@ type Mp3AudioFile struct {
     timestamp time.Time
     duration time.Duration
     usable bool
+    removable bool
 }
 
 //--------------------------------------------------------------------
@@ -47,13 +49,14 @@ type Mp3AudioFile struct {
 //--------------------------------------------------------------------
 
 // The age at which an MP3 file should no longer be used
-const MP3_MAX_AGE time.Duration = time.Minute
+const MP3_USABLE_AGE time.Duration = time.Minute
 
-// The extension of an HLS index file
-const HLS_INDEX_EXTENSION string = ".m3u8"
+// The age at which an MP3 file can be deleted
+const MP3_REMOVABLE_AGE time.Duration = time.Minute * 2
 
-// The name of the index file
-const HLS_INDEX_NAME string = "chuffs" + HLS_INDEX_EXTENSION
+// The lag from the newest point in the playlist to the point
+// where a browser should begin playing from the playlist
+const MAX_PLAY_LAG time.Duration = time.Second * 5
 
 //--------------------------------------------------------------------
 // Variables
@@ -65,8 +68,8 @@ var MediaControlChannel chan<- interface{}
 // List of output MP3 files
 var mp3FileList = list.New()
 
-// Mutex to manage access to the index file
-var indexAccess sync.Mutex
+// Mutex to manage access to the playlist file
+var playlistAccess sync.Mutex
 
 //--------------------------------------------------------------------
 // Functions
@@ -103,13 +106,14 @@ func ukTimeIso8601(timestamp time.Time) string {
     return timestamp.In(location).Format("2006-01-02T15:04:05.000-07:00")    
 }
 
-// Create/update an index file
+// Create/update the playlist file
 // See https://en.wikipedia.org/wiki/M3U
 // and, in much more detail, https://tools.ietf.org/html/draft-pantos-http-live-streaming-17#section-4
-func updateIndexFile(fileName string) {
-    var maxDuration time.Duration
+func updatePlaylistFile(fileName string, mediaSequenceNumber int) bool {
+    var maxSegmentDuration time.Duration
     var segmentData bytes.Buffer
     var numSegments int
+    var totalDuration time.Duration
     
     // Go through all of the MP3 files, assembling the segment
     // list and working out the dynamic header values
@@ -119,15 +123,16 @@ func updateIndexFile(fileName string) {
             fmt.Fprintf(&segmentData, "#EXT-X-PROGRAM-DATE-TIME:%s\r\n", ukTimeIso8601(newElement.Value.(*Mp3AudioFile).timestamp))
             fmt.Fprintf(&segmentData, "#EXTINF:%f, %s\r\n", float32(newElement.Value.(*Mp3AudioFile).duration) / float32(time.Second),
                         newElement.Value.(*Mp3AudioFile).title)
-            fmt.Fprintf(&segmentData, "%s\r\n\r\n", newElement.Value.(*Mp3AudioFile).fileName)
-            if maxDuration < newElement.Value.(*Mp3AudioFile).duration {
-                maxDuration = newElement.Value.(*Mp3AudioFile).duration
+            fmt.Fprintf(&segmentData, "%s\r\n", newElement.Value.(*Mp3AudioFile).fileName)
+            totalDuration += newElement.Value.(*Mp3AudioFile).duration
+            if maxSegmentDuration < newElement.Value.(*Mp3AudioFile).duration {
+                maxSegmentDuration = newElement.Value.(*Mp3AudioFile).duration
             }
         }
     }
-
+    
     // Now lock access to the file and create it
-    indexAccess.Lock()
+    playlistAccess.Lock()
     handle, err := os.Create(fileName)
     if err == nil {
         // Write the fixed header
@@ -135,38 +140,54 @@ func updateIndexFile(fileName string) {
         fmt.Fprintf(handle, "#EXT-X-VERSION:3\r\n")
         if numSegments > 0 {
             // Write the dynamic header fields
-            fmt.Fprintf(handle, "#EXT-X-TARGETDURATION:%d\r\n", int(maxDuration / time.Second) + 1)
-            fmt.Fprintf(handle, "#EXT-X-MEDIA-SEQUENCE:%d\r\n", numSegments - 1)
+            fmt.Fprintf(handle, "#EXT-X-TARGETDURATION:%d\r\n", int(math.Ceil(float64(maxSegmentDuration) / float64(time.Second))))
+            fmt.Fprintf(handle, "#EXT-X-MEDIA-SEQUENCE:%d\r\n", mediaSequenceNumber)
+            if totalDuration > MAX_PLAY_LAG {
+                fmt.Fprintf(handle, "#EXT-X-START:TIME-OFFSET=-%f\r\n", float32(totalDuration - MAX_PLAY_LAG) / float32(time.Second))
+            }
             // Write the segment list
             segmentData.WriteTo(handle)
         }
-        log.Printf("Updated index file \"%s\" with %d segment(s).\n", fileName, numSegments)        
+        log.Printf("Updated playlist file \"%s\" with %d segment(s).\n", fileName, numSegments)
+        handle.Close()        
     } else {
-        log.Printf("Unable to create index file \"%s\".\n", fileName)        
+        log.Printf("Unable to create playlist file \"%s\" (%s).\n", fileName, err.Error())        
     }
-    indexAccess.Unlock()
+    playlistAccess.Unlock()
+    
+    return err == nil
 }
 
 // Home page handler
-func homeHandler (out http.ResponseWriter, in *http.Request, mp3Dir string) {
-    http.Redirect(out, in, mp3Dir, http.StatusFound)
+func homeHandler (out http.ResponseWriter, in *http.Request, newPath string) {
+    log.Printf("Home handler was asked for \"%s\", redirecting to \"%s\"...\n", in.URL.Path, newPath)
+    http.Redirect(out, in, newPath, http.StatusFound)
 }
 
 // Handle a stream request
 func streamHandler(out http.ResponseWriter, in *http.Request) {
-    if filepath.Ext(in.URL.Path) == HLS_INDEX_EXTENSION {        
-        // Serve the HLS index file
-        log.Printf("Serving index file \"%s\"...\n", in.URL.Path)
-        indexAccess.Lock()
+    var ext string = filepath.Ext(in.URL.Path)
+    
+    log.Printf("Stream handler was asked for \"%s\"...\n", in.URL.Path)
+    if ext == PLAYLIST_EXTENSION {        
+        // Serve the playlist file
+        log.Printf("Serving playlist file \"%s\".\n", in.URL.Path)
+        playlistAccess.Lock()
         http.ServeFile(out, in, in.URL.Path)
-        indexAccess.Unlock()
+        playlistAccess.Unlock()
         out.Header().Set("Content-Type","application/x-mpegurl")
         out.Header().Set("Cache-Control","no-cache")
-    } else {
+    } else if ext == SEGMENT_EXTENSION {
         // Serve the requested segment
-        log.Printf("Serving segment file \"%s\"...\n", in.URL.Path)
+        log.Printf("Serving segment file \"%s\".\n", in.URL.Path)
         http.ServeFile(out, in, in.URL.Path)
         out.Header().Set("Content-Type","audio/mpeg")
+        out.Header().Set("Cache-Control","no-cache")
+    } else {
+        // Just serve the requested page
+        log.Printf("Serving \"%s\".\n", in.URL.Path)
+        http.ServeFile(out, in, in.URL.Path)
+        out.Header().Set("Cache-Control","no-cache")
     }
 }
 
@@ -185,37 +206,50 @@ func clearMp3FileList(mp3Dir string) {
 }
 
 // Start HTTP server for streaming output; this function should never return
-func operateAudioOut(port string, mp3Dir string) {
+func operateAudioOut(port string, playlistPath string,  oOSDir string) {
     var channel = make(chan interface{})
     var err error
-    var mp3IndexFilePath string
+    var mp3Dir string
+    var mediaSequenceNumber int
+    var oOS bool = true
     streamTicker := time.NewTicker(time.Second * 5)
+    mux := http.NewServeMux()
     
     MediaControlChannel = channel
     
     // Initialise the linked list of MP3 output files
     mp3FileList.Init()
     
-    // Set up the index file path
-    mp3IndexFilePath = mp3Dir + string(os.PathSeparator) + HLS_INDEX_NAME
+    // Set up the MP3 directory
+    mp3Dir = filepath.Dir(playlistPath)
     
-    // Create an initial (empty) index file
-    updateIndexFile(mp3IndexFilePath)
+    // Create an initial (empty) playlist file    
+    if !updatePlaylistFile(playlistPath, mediaSequenceNumber) {
+        fmt.Fprintf(os.Stderr, "Unable to create playlist file \"%s\" (%s).\n", playlistPath, err.Error())
+        os.Exit(-1)            
+    }
 
     // Timed function to perform operations on the stream
     go func() {
         for _ = range streamTicker.C {
-            // Go through the file list and mark old files as unusable, attempting
-            // to delete unusable files as we go 
+            // Go through the file list and mark old files as unusable, then removable, 
+            // and attempt to delete removable files as we go 
             for newElement := mp3FileList.Front(); newElement != nil; newElement = newElement.Next() {
-                if (newElement.Value.(*Mp3AudioFile).usable) && (time.Now().Sub(newElement.Value.(*Mp3AudioFile).timestamp) > MP3_MAX_AGE) {
-                    //newElement.Value.(*Mp3AudioFile).usable = false;
-                    log.Printf ("MP3 file \"%s\", received at %s, now out of date (time now is %s).\n",
+                if (newElement.Value.(*Mp3AudioFile).usable) && (time.Now().Sub(newElement.Value.(*Mp3AudioFile).timestamp) > MP3_USABLE_AGE) {
+                    newElement.Value.(*Mp3AudioFile).usable = false;
+                    mediaSequenceNumber++;
+                    log.Printf ("MP3 file \"%s\", received at %s, no longer usable (time now is %s).\n",
                                 newElement.Value.(*Mp3AudioFile).fileName, newElement.Value.(*Mp3AudioFile).timestamp.String(),
                                 time.Now().String())
-                    updateIndexFile(mp3IndexFilePath)
-                }
-                if !newElement.Value.(*Mp3AudioFile).usable {
+                    updatePlaylistFile(playlistPath, mediaSequenceNumber)
+                }                
+                if (!newElement.Value.(*Mp3AudioFile).usable) && (time.Now().Sub(newElement.Value.(*Mp3AudioFile).timestamp) > MP3_REMOVABLE_AGE) {
+                    newElement.Value.(*Mp3AudioFile).removable = true;
+                    log.Printf ("MP3 file \"%s\", received at %s, can now been deleted (time now is %s).\n",
+                                newElement.Value.(*Mp3AudioFile).fileName, newElement.Value.(*Mp3AudioFile).timestamp.String(),
+                                time.Now().String())
+                }                
+                if newElement.Value.(*Mp3AudioFile).removable {
                     filePath := mp3Dir + string(os.PathSeparator) + newElement.Value.(*Mp3AudioFile).fileName
                     if os.Remove(filePath) == nil {
                         log.Printf ("MP3 file \"%s\" successfully deleted and will be removed from the list.\n", filePath)
@@ -235,7 +269,9 @@ func operateAudioOut(port string, mp3Dir string) {
                 {
                     log.Printf("Adding new MP3 file \"%s\", duration %d millisecond(s), to the FIFO list...\n", message.fileName, int(message.duration / time.Millisecond))
                     mp3FileList.PushBack(message)
-                    updateIndexFile(mp3IndexFilePath)
+                    updatePlaylistFile(playlistPath, mediaSequenceNumber)
+                    oOS = false;
+                    // TODO: when to set this to true?
                 }
             }
         }
@@ -244,23 +280,35 @@ func operateAudioOut(port string, mp3Dir string) {
     }()
     
     // Set up the HTTP page handlers
-    http.HandleFunc("/", func(out http.ResponseWriter, in *http.Request) {
+    mux.HandleFunc("/", func(out http.ResponseWriter, in *http.Request) {
         if !filterCrossDomainRequest(out, in) {
             addCrossDomainToResponse(out)
-            homeHandler(out, in, mp3Dir + "/")
+            if oOS && (oOSDir != ""){
+                homeHandler(out, in, oOSDir)
+            } else {
+                homeHandler(out, in, mp3Dir)
+            }
         }
     })
-    http.HandleFunc(mp3Dir + "/", func(out http.ResponseWriter, in *http.Request) {
+    mux.HandleFunc(mp3Dir + "/", func(out http.ResponseWriter, in *http.Request) {
         if !filterCrossDomainRequest(out, in) {
             addCrossDomainToResponse(out)
             streamHandler(out, in)
         }
     })
-
+    if oOSDir != "" {
+        mux.HandleFunc(oOSDir + "/", func(out http.ResponseWriter, in *http.Request) {
+            if !filterCrossDomainRequest(out, in) {
+                addCrossDomainToResponse(out)
+                streamHandler(out, in)
+            }
+        })
+    }
+    
     fmt.Printf("Starting HTTP server for Chuff requests on port %s.\n", port)
     
     // Start the HTTP server (should block)
-    err = http.ListenAndServeTLS(":" + port, "cert.pem", "privkey.pem", nil)
+    err = http.ListenAndServeTLS(":" + port, "cert.pem", "privkey.pem", mux)
     
     if err != nil {        
         fmt.Fprintf(os.Stderr, "Could not start HTTP server (%s).\n", err.Error())

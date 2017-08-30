@@ -21,6 +21,8 @@ import (
     "io/ioutil"
     "container/list"
     "bytes"
+    "encoding/binary"
+    "errors"
     "github.com/u-blox/ioc-server/lame"
 //    "encoding/hex"
 )
@@ -36,13 +38,13 @@ const NUM_PROCESSED_DATAGRAMS int = 1
 const MAX_GAP_FILL_MILLISECONDS int = 500
 
 // The amount of audio in each MP3 output file
-const MAX_MP3_FILE_DURATION time.Duration = time.Second * 5
-
-// The extension used for MP3 files
-const MP3_FILE_EXTENSION string = ".mp3"
+const MAX_MP3_FILE_DURATION time.Duration = time.Second * 10
 
 // The track title to use
 const MP3_TITLE string = "Internet of Chuffs"
+
+// The length of the binary timestamp in the ID3 tag of the MP3 file
+const MP3_ID3_TAG_TIMESTAMP_LEN int = 8
 
 //--------------------------------------------------------------------
 // Variables
@@ -60,8 +62,31 @@ var processedDatagramList = list.New()
 // An audio buffer to hold raw PCM samples received from the client
 var pcmAudio bytes.Buffer
 
-// Fixed byte array of ID3 data to put at start of MP3 file
-var id3 = []byte {'I', 'D', '3', 4, 0, 0, 0, 0, 0, 0x3f, 'P', 'R', 'I', 'V', 0, 0, 0, 53, 0, 0, 'c', 'o', 'm', '.', 'a', 'p', 'p', 'l', 'e', '.', 's', 't', 'r', 'e', 'a', 'm', 'i', 'n', 'g', '.', 't', 'r', 'a', 'n', 's', 'p', 'o', 'r', 't', 'S', 't', 'r', 'e', 'a', 'm', 'T', 'i', 'm', 'e', 's', 't', 'a', 'm', 'p', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xFF}
+// Prefix that represents the fixed portion of a "PRIV" ID3 tag to put at the start of a
+// segment file, see https://tools.ietf.org/html/draft-pantos-http-live-streaming-23#section-3.4
+// and http://id3.org/id3v2.3.0#ID3v2_overview
+//
+// The generic portion of the prefix consists of:
+//   - a 10-byte ID3 header, containing:
+//     - the characters "ID3",
+//     - two bytes of ID3 version number, set to 0x0400,
+//     - one byte of ID3 flags, set to 0,
+//     - four bytes of ID3 tag size where the most significant bit (bit 7) is set to
+//       zero in every byte, making a total of 28 bits; the zeroed bits are ignored, so
+//       a 257 bytes long tag is represented as 0x00 0x00 0x02 0x01; in our case
+//       the size is 0x3f (63).
+//   - an ID3 body, containing:
+//     - four characters of frame ID, in our case "PRIV",
+//     - four bytes of size, calculated as the whole ID frame size minus the 10-byte ID3 header
+//       so in our case 0x35 (53),
+//     - two bytes of flags, set to 0.
+// The "PRIV" ID3 tag, which is used in our case, consists of:
+//   - an owner identifier string followed by 0x00, in our case "com.apple.streaming.transportStreamTimestamp\x00",
+//   - MP3_ID3_TAG_TIMESTAMP_LEN octets of big-endian binary timestamp on a 90 kHz basis.
+//
+// Only the fixed portion of the PRIV ID3 tag is included in this variable, the MP3_ID3_TAG_TIMESTAMP_LEN bytes of timestamp must be
+// written separately.
+var id3Prefix string = "ID3\x04\x00\x00\x00\x00\x00\x3fPRIV\x00\x00\x00\x35\x00\x00com.apple.streaming.transportStreamTimestamp\x00"
 
 // Debug stuff
 var bytesDuringInterval int
@@ -79,14 +104,14 @@ func openMp3File(dirName string) *os.File {
     if err == nil {
         filePath := handle.Name()
         handle.Close()
-        if os.Rename(filePath, filePath + MP3_FILE_EXTENSION) == nil {
-            handle, err = os.Create(filePath + MP3_FILE_EXTENSION)
-            log.Printf("Opened \"%s\" for MP3 output.\n", handle.Name())
+        if os.Rename(filePath, filePath + SEGMENT_EXTENSION) == nil {
+            handle, err = os.Create(filePath + SEGMENT_EXTENSION)
+            log.Printf("Opened segment file \"%s\" for MP3 output.\n", handle.Name())
         } else {
-            log.Printf("Unable to rename temporary file \"%s\" to \"%s\".\n", filePath, filePath + MP3_FILE_EXTENSION)
+            log.Printf("Unable to rename temporary file \"%s\" to \"%s\".\n", filePath, filePath + SEGMENT_EXTENSION)
         }
     } else {
-        log.Printf("Unable to create temporary file for MP3 output in directory \"%s\".\n", dirName)
+        log.Printf("Unable to create segment file for MP3 output in directory \"%s\".\n", dirName)
     }
     
     return handle
@@ -223,6 +248,33 @@ func encodeOutput (mp3Writer *lame.LameWriter, pcmHandle *os.File) time.Duration
     return duration
 }
 
+// Write the ID3 tag to the start of an MP3 segment file indicating
+// its time offset from the previous segment file
+func writeTag(mp3Handle *os.File, offset time.Duration) error {
+    var timestampBytes bytes.Buffer
+    var timestampUint64 uint64 // Must be an uint64 to produce the correct sized timestamp
+    
+    // First, write the prefix
+    _, err := mp3Handle.WriteString(id3Prefix)
+    if err == nil {
+        // Then write the binary timestamp offset on a 90 kHz basis
+        timestampUint64 = uint64(float32(offset) / float32(time.Microsecond) * float32(90000) / float32(1000000))
+        err := binary.Write(&timestampBytes, binary.BigEndian, timestampUint64)
+        if err == nil {
+            if timestampBytes.Len() != MP3_ID3_TAG_TIMESTAMP_LEN {
+                err = errors.New(fmt.Sprintf("Timestamp is of incorrect size (%d byte(s) (0x%x) when size must be %d byte(s)).\n", timestampBytes.Len(), &timestampBytes, MP3_ID3_TAG_TIMESTAMP_LEN))
+            }
+        } else {
+            log.Printf("Error creating timestamp offset (%s).\n", err.Error())
+        }
+        
+        log.Printf("Writing %d byte timestamp inside MP3 file (0x%x)...\n", timestampBytes.Len(), &timestampBytes)
+        _, err = timestampBytes.WriteTo(mp3Handle)
+    }
+    
+    return err
+}
+
 // Do the processing; this function should never return
 func operateAudioProcessing(pcmHandle *os.File, mp3Dir string) {
     var mp3Audio bytes.Buffer
@@ -230,6 +282,7 @@ func operateAudioProcessing(pcmHandle *os.File, mp3Dir string) {
     var mp3Handle *os.File
     var err error
     var mp3Duration time.Duration
+    var mp3Offset time.Duration
     var channel = make(chan interface{})
     processTicker := time.NewTicker(time.Duration(BLOCK_DURATION_MS) * time.Millisecond)
     
@@ -288,26 +341,32 @@ func operateAudioProcessing(pcmHandle *os.File, mp3Dir string) {
             if mp3Duration >= MAX_MP3_FILE_DURATION {
                 if mp3Handle != nil {
                     log.Printf("Writing %d millisecond(s) of MP3 audio to \"%s\".\n", mp3Duration / time.Millisecond, mp3Handle.Name())
-                    _, _ = mp3Handle.Write(id3)
-                    _, err = mp3Audio.WriteTo(mp3Handle)
-                    mp3Handle.Close()
-                    if mp3Writer != nil {
-                        mp3Writer.Close()
-                    }
-                    log.Printf("Closed MP3 file and MP3 writer.\n")
+                    err = writeTag(mp3Handle, mp3Offset)
                     if err == nil {
-                        // Let the audio output channel know of the new audio file
-                        mp3AudioFile := new(Mp3AudioFile)
-                        mp3AudioFile.fileName = filepath.Base(mp3Handle.Name())
-                        mp3AudioFile.title = MP3_TITLE
-                        mp3AudioFile.timestamp = time.Now()
-                        mp3AudioFile.duration = mp3Duration
-                        mp3AudioFile.usable = true;
-                        MediaControlChannel <- mp3AudioFile
+                        _, err = mp3Audio.WriteTo(mp3Handle)
+                        mp3Handle.Close()
+                        if mp3Writer != nil {
+                            mp3Writer.Close()
+                        }
+                        log.Printf("Closed MP3 file and MP3 writer.\n")
+                        if err == nil {
+                            // Let the audio output channel know of the new audio file
+                            mp3AudioFile := new(Mp3AudioFile)
+                            mp3AudioFile.fileName = filepath.Base(mp3Handle.Name())
+                            mp3AudioFile.title = MP3_TITLE
+                            mp3AudioFile.timestamp = time.Now()
+                            mp3AudioFile.duration = mp3Duration
+                            mp3AudioFile.usable = true;
+                            mp3AudioFile.removable = false;
+                            MediaControlChannel <- mp3AudioFile
+                        } else {
+                            log.Printf("There was an error writing to \"%s\" (%s).\n", mp3Handle.Name(), err.Error())                 
+                        }
                     } else {
-                        log.Printf("There was an error writing to \"%s\" (%s).\n", mp3Handle.Name(), err.Error())
+                        log.Printf("There was an error writing the ID3 tag to \"%s\" (%s).\n", mp3Handle.Name(), err.Error())                 
                     }
                 }
+                mp3Offset += mp3Duration
                 mp3Duration = time.Duration(0)
                 mp3Handle = openMp3File(mp3Dir)
                 mp3Writer = createMp3Writer(&mp3Audio)
