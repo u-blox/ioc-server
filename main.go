@@ -51,6 +51,7 @@ var opts struct {
         Out string `positional-arg-name:"output-port" description:"the output port for HTTP service"`
         PlaylistPath string `positional-arg-name:"playlistpath" description:"path to the live playlist file (any file extension will be replaced with .m3u8); the playlist file will be created by this program and the audio files will be stored in the same directory as the playlist file.  THe HTML file that serves the playlist file should be placed in this directory."`
     } `positional-args:"true" required:"yes"`
+    UseTcp bool `short:"t" long:"tcp" description:"expect a TCP connection rather than a UDP connection"`
     ClearTsDir bool `short:"c" long:"clear" description:"clear the segment files from the live playlist directory before using it"`
     OOSDir string `short:"o" long:"oosdir" description:"the path to a directory containing HTML and, optionally in the same directory, static playlist/audio files, to use when there is no live audio to stream (you must create these files yourself)"`
     LogName string `short:"l" long:"logfile" description:"file for logging output (will be truncated if it already exists)"`
@@ -124,8 +125,8 @@ func main() {
         // Run the audio processing loop
         go operateAudioProcessing(rawPcmHandle, mp3Dir)
         
-        // Run the UDP server loop for incoming audio
-        go operateAudioIn(opts.Required.In)
+        // Run the server loop for incoming audio
+        go operateAudioIn(opts.Required.In, opts.UseTcp)
         
         // Run the HTTP server for audio output (which should block)
         operateAudioOut(opts.Required.Out, playlistPath, opts.OOSDir)

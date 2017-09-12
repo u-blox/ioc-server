@@ -49,14 +49,14 @@ type Mp3AudioFile struct {
 //--------------------------------------------------------------------
 
 // The age at which an MP3 file should no longer be used
-const MP3_USABLE_AGE time.Duration = time.Minute
+const MP3_USABLE_AGE time.Duration = time.Minute * 2
 
 // The age at which an MP3 file can be deleted
-const MP3_REMOVABLE_AGE time.Duration = time.Minute * 2
+const MP3_REMOVABLE_AGE time.Duration = time.Minute * 5
 
 // The lag from the newest point in the playlist to the point
 // where a browser should begin playing from the playlist
-const MAX_PLAY_LAG time.Duration = time.Second * 5
+const MAX_PLAY_LAG time.Duration = time.Second * 20
 
 //--------------------------------------------------------------------
 // Variables
@@ -143,7 +143,7 @@ func updatePlaylistFile(fileName string, mediaSequenceNumber int) bool {
             fmt.Fprintf(handle, "#EXT-X-TARGETDURATION:%d\r\n", int(math.Ceil(float64(maxSegmentDuration) / float64(time.Second))))
             fmt.Fprintf(handle, "#EXT-X-MEDIA-SEQUENCE:%d\r\n", mediaSequenceNumber)
             if totalDuration > MAX_PLAY_LAG {
-                fmt.Fprintf(handle, "#EXT-X-START:TIME-OFFSET=-%f\r\n", float32(totalDuration - MAX_PLAY_LAG) / float32(time.Second))
+                fmt.Fprintf(handle, "#EXT-X-START:TIME-OFFSET=-%f\r\n", float32(MAX_PLAY_LAG) / float32(time.Second))
             }
             // Write the segment list
             segmentData.WriteTo(handle)

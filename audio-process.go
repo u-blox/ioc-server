@@ -38,13 +38,19 @@ const NUM_PROCESSED_DATAGRAMS int = 1
 const MAX_GAP_FILL_MILLISECONDS int = 500
 
 // The amount of audio in each MP3 output file
-const MAX_MP3_FILE_DURATION time.Duration = time.Second * 10
+const MAX_MP3_FILE_DURATION time.Duration = time.Second * 15
 
 // The track title to use
 const MP3_TITLE string = "Internet of Chuffs"
 
 // The length of the binary timestamp in the ID3 tag of the MP3 file
 const MP3_ID3_TAG_TIMESTAMP_LEN int = 8
+
+// The number of samples in an MP3 frame
+const MP3_SAMPLES_PER_FRAME int = 576
+
+// The duration of an MP3 frame 
+const MP3_FRAME_DURATION time.Duration = time.Duration(uint64(MP3_SAMPLES_PER_FRAME) * 1000000 / uint64(SAMPLING_FREQUENCY)) * time.Microsecond
 
 //--------------------------------------------------------------------
 // Variables
@@ -126,8 +132,15 @@ func createMp3Writer(mp3Audio *bytes.Buffer) *lame.LameWriter {
         mp3Writer.Encoder.SetInSamplerate(SAMPLING_FREQUENCY)
         mp3Writer.Encoder.SetNumChannels(1)
         mp3Writer.Encoder.SetMode(lame.MONO)
-        mp3Writer.Encoder.SetVBR(lame.VBR_DEFAULT)
-        mp3Writer.Encoder.SetVBRQuality(2)
+        // VBR writes tags into the file which makes
+        // hls.js think the file isn't an MP3 file (as
+        // the first MP3 header must appear within the
+        // first 100 bytes of the file).  So don't do that.
+        mp3Writer.Encoder.SetVBR(lame.VBR_OFF)
+        // Disabling the bit reservoir reduces quality
+        // but allows consecutive MP3 files to be butted
+        // up together without any gaps
+        mp3Writer.Encoder.DisableReservoir()
         mp3Writer.Encoder.SetGenre("144") // Thrash metal
         // Note: bit depth defaults to 16
         if mp3Writer.Encoder.InitParams() >= 0 {
@@ -227,7 +240,7 @@ func encodeOutput (mp3Writer *lame.LameWriter, pcmHandle *os.File) time.Duration
     for err == nil {
         x, err = pcmAudio.Read(buffer)
         if x > 0 {
-            duration = time.Duration(x / URTP_SAMPLE_SIZE * 1000000 / SAMPLING_FREQUENCY) * time.Microsecond
+            duration += time.Duration(x / URTP_SAMPLE_SIZE * 1000000 / SAMPLING_FREQUENCY) * time.Microsecond
             log.Printf("Encoding %d byte(s) into the output...\n", x)
 //            log.Printf("%s\n", hex.Dump(buffer[:x]))
             if mp3Writer != nil {
@@ -344,11 +357,13 @@ func operateAudioProcessing(pcmHandle *os.File, mp3Dir string) {
                     err = writeTag(mp3Handle, mp3Offset)
                     if err == nil {
                         _, err = mp3Audio.WriteTo(mp3Handle)
-                        mp3Handle.Close()
                         if mp3Writer != nil {
-                            mp3Writer.Close()
+                            padding, _ := mp3Writer.Close()
+                            paddingDuration := time.Duration(uint64(padding) * 1000000 / uint64(SAMPLING_FREQUENCY)) * time.Microsecond
+                            log.Printf("Closed MP3 writer, padding was %d, which is %d microseconds.\n", padding, paddingDuration / time.Microsecond)
                         }
-                        log.Printf("Closed MP3 file and MP3 writer.\n")
+                        mp3Handle.Close()
+                        log.Printf("Closed MP3 file.\n")
                         if err == nil {
                             // Let the audio output channel know of the new audio file
                             mp3AudioFile := new(Mp3AudioFile)
