@@ -29,11 +29,12 @@ func (lw *LameWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-func (lw *LameWriter) Close() error {
+func (lw *LameWriter) Close() (int, error) {
 	out := lw.Encoder.Flush()
+	padding := lw.Encoder.GetPadding()
 	if len(out) == 0 {
-		return nil
+		return padding, nil
 	}
 	_, err := lw.output.Write(out)
-	return err
+	return padding, err
 }

@@ -58,6 +58,11 @@ func (e *Encoder) SetBitrate(bitRate int) {
 	C.lame_set_brate(e.handle, C.int(bitRate))
 }
 
+func (e *Encoder) GetBitrate() int {
+	retcode:= C.lame_get_brate(e.handle)
+	return int(retcode)
+}
+
 func (e *Encoder) SetMode(mode C.MPEG_mode) {
 	C.lame_set_mode(e.handle, mode)
 }
@@ -81,6 +86,34 @@ func (e *Encoder) SetGenre(genre string) {
 func (e *Encoder) InitParams() int {
 	retcode := C.lame_init_params(e.handle)
 	return int(retcode)
+}
+
+func (e *Encoder) GetPadding() int {
+    retcode := C.lame_get_encoder_padding(e.handle)
+    return int(retcode)
+}
+
+func (e *Encoder) GetEncoderDelay() int {
+    retcode := C.lame_get_encoder_delay(e.handle)
+    return int(retcode)    
+}
+
+func (e *Encoder) GetSizeMp3NotWritten() int {
+    retcode := C.lame_get_size_mp3buffer(e.handle)
+    return int(retcode)    
+}
+
+func (e *Encoder) GetSizePcmUnencoded() int {
+    retcode := C.lame_get_mf_samples_to_encode(e.handle)
+    return int(retcode)    
+}
+
+func (e *Encoder) DisableReservoir() {
+    C.lame_set_disable_reservoir(e.handle, 1)
+}
+
+func (e *Encoder) EnableReservoir() {
+    C.lame_set_disable_reservoir(e.handle, 0)
 }
 
 func (e *Encoder) NumChannels() int {
@@ -151,7 +184,7 @@ func (e *Encoder) Flush() []byte {
 	estimatedSize := 7200
 	out := make([]byte, estimatedSize)
 	cOut := (*C.uchar)(unsafe.Pointer(&out[0]))
-	bytesOut := C.int(C.lame_encode_flush(
+	bytesOut := C.int(C.lame_encode_flush_nogap(
 		e.handle,
 		cOut,
 		C.int(estimatedSize),
