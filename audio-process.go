@@ -94,12 +94,6 @@ var pcmAudio bytes.Buffer
 // written separately.
 var id3Prefix string = "ID3\x04\x00\x00\x00\x00\x00\x3fPRIV\x00\x00\x00\x35\x00\x00com.apple.streaming.transportStreamTimestamp\x00"
 
-// Debug stuff
-var bytesDuringInterval int
-var lastIntervalTime time.Time
-var rate float64
-var averagingInterval time.Duration = time.Second * 10
-
 //--------------------------------------------------------------------
 // Functions
 //--------------------------------------------------------------------
@@ -140,7 +134,7 @@ func createMp3Writer(mp3Audio *bytes.Buffer) *lame.LameWriter {
         // Disabling the bit reservoir reduces quality
         // but allows consecutive MP3 files to be butted
         // up together without any gaps
-        mp3Writer.Encoder.DisableReservoir()
+        //mp3Writer.Encoder.DisableReservoir()
         mp3Writer.Encoder.SetGenre("144") // Thrash metal
         // Note: bit depth defaults to 16
         if mp3Writer.Encoder.InitParams() >= 0 {
@@ -184,9 +178,6 @@ func handleGap(gap int, previousDatagram * UrtpDatagram) {
 
 // Process a URTP datagram
 func processDatagram(datagram * UrtpDatagram, savedDatagramList * list.List) {
-    var timeNow time.Time
-    var sum int
-    var alarm string
     audioBytes := make([]byte, len(*datagram.Audio) * URTP_SAMPLE_SIZE)
     var previousDatagram *UrtpDatagram
     
@@ -199,7 +190,6 @@ func processDatagram(datagram * UrtpDatagram, savedDatagramList * list.List) {
     // Handle the case where we have missed some datagrams
     if (previousDatagram != nil) && (datagram.SequenceNumber != previousDatagram.SequenceNumber + 1) {
         handleGap(int(datagram.SequenceNumber - previousDatagram.SequenceNumber) * SAMPLES_PER_BLOCK, previousDatagram)
-        alarm = "*"
     }
     
     // Copy the received audio into the buffer    
@@ -207,7 +197,6 @@ func processDatagram(datagram * UrtpDatagram, savedDatagramList * list.List) {
         for z := 0; z < URTP_SAMPLE_SIZE; z++ {
             audioBytes[(x * URTP_SAMPLE_SIZE) + z] = byte(y >> ((uint(z) * 8)))
         } 
-        sum += int(y);
     }
     log.Printf("Writing %d bytes to the audio buffer...\n", len(audioBytes))
     pcmAudio.Write(audioBytes)
@@ -215,18 +204,6 @@ func processDatagram(datagram * UrtpDatagram, savedDatagramList * list.List) {
     // If the block is shorter than expected, handle that gap too
     if len(*datagram.Audio) < SAMPLES_PER_BLOCK {
         handleGap(SAMPLES_PER_BLOCK - len(*datagram.Audio), previousDatagram)        
-    }
-        
-    // DEBUG STUFF FROM HERE ON    
-    
-    log.Printf("Seq %d%s, time %3.3f, length %d sample(s), sum %d, throughput %3.3f kbits/s\n",
-               datagram.SequenceNumber, alarm, float64(datagram.Timestamp) / 1000, len(*datagram.Audio), sum, rate)
-    timeNow = time.Now();
-    bytesDuringInterval += len(*datagram.Audio) * URTP_SAMPLE_SIZE
-    if !lastIntervalTime.IsZero() && (timeNow.Sub(lastIntervalTime) > averagingInterval) {
-        rate = float64(bytesDuringInterval) * 8 / timeNow.Sub(lastIntervalTime).Seconds() / 1000
-        bytesDuringInterval = 0
-        lastIntervalTime = timeNow
     }
 }
 
@@ -361,6 +338,9 @@ func operateAudioProcessing(pcmHandle *os.File, mp3Dir string) {
                             padding, _ := mp3Writer.Close()
                             paddingDuration := time.Duration(uint64(padding) * 1000000 / uint64(SAMPLING_FREQUENCY)) * time.Microsecond
                             log.Printf("Closed MP3 writer, padding was %d, which is %d microseconds.\n", padding, paddingDuration / time.Microsecond)
+                            if paddingDuration < mp3Duration {
+                                mp3Duration -= paddingDuration
+                            }
                         }
                         mp3Handle.Close()
                         log.Printf("Closed MP3 file.\n")

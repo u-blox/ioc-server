@@ -28,7 +28,7 @@ import (
 // Struct to hold a URTP datagram
 type UrtpDatagram struct {
     SequenceNumber  uint16
-    Timestamp       uint32
+    Timestamp       uint64
     Audio           *[]int16
 }
 
@@ -46,16 +46,22 @@ const SAMPLING_FREQUENCY int = 16000
 const SAMPLES_PER_BLOCK int = SAMPLING_FREQUENCY * BLOCK_DURATION_MS / 1000
 
 // The URTP datagram dimensions
-const URTP_HEADER_SIZE int = 10
+const URTP_HEADER_SIZE int = 14
 const URTP_SAMPLE_SIZE int = 2
 const URTP_DATAGRAM_SIZE int = URTP_HEADER_SIZE + SAMPLES_PER_BLOCK * URTP_SAMPLE_SIZE
 
-// Offset to the number of samples part of the URTP header
-const URTP_NUM_SAMPLES_OFFSET int = 8
+// Offset to the number of bytes part of the URTP header
+const URTP_NUM_BYTES_AUDIO_OFFSET int = 12
 
 // The overhead to add to the URTP datagram size to give a good IP buffer size for
 // one packet
 const IP_HEADER_OVERHEAD int = 40
+
+// The audio coding schemes
+const (
+    PCM_SIGNED_16_BIT_16000_HZ = 0
+    UNICAM_COMPRESSED_16000_HZ = 1
+)
 
 //--------------------------------------------------------------------
 // Variables
@@ -83,19 +89,30 @@ func handleUrtpDatagram(packet []byte) {
         // Populate a URTP datagram with the data
         urtpDatagram := new(UrtpDatagram)
         log.Printf("URTP header:\n")
+        log.Printf("  protocol version: %d.\n", packet[0])
+        audioCodingScheme := packet[1]
         urtpDatagram.SequenceNumber = uint16(packet[2]) << 8 + uint16(packet[3])
-        log.Printf("  sequence number %d\n", urtpDatagram.SequenceNumber)
-        urtpDatagram.Timestamp = (uint32(packet[4]) << 24) + (uint32(packet[5]) << 16) + (uint32(packet[6]) << 8) + uint32(packet[7])
-        log.Printf("  timestamp       %d\n", urtpDatagram.Timestamp)
+        log.Printf("  sequence number:  %d\n", urtpDatagram.SequenceNumber)
+        urtpDatagram.Timestamp = (uint64(packet[4]) << 56) + (uint64(packet[5]) << 48) + (uint64(packet[6]) << 40) + (uint64(packet[7]) << 32) +
+                                 (uint64(packet[8]) << 24) + (uint64(packet[9]) << 16) + (uint64(packet[10]) << 8) + uint64(packet[11])
+        log.Printf("  timestamp:        %6.3f ms\n", float64(urtpDatagram.Timestamp) / 1000)
         if (len(packet) > URTP_HEADER_SIZE) {
-            audio := make([]int16, (len(packet) - URTP_HEADER_SIZE) / URTP_SAMPLE_SIZE)
-            // Copy in the bytes
-            x := URTP_HEADER_SIZE
-            for y := range audio {
-                audio[y] = (int16(packet[x]) << 8) + int16(packet[x + 1])
-                x += 2 
+            switch (audioCodingScheme) {
+                case PCM_SIGNED_16_BIT_16000_HZ:
+                    log.Printf("  audio coding:     PCM_SIGNED_16_BIT_16000_HZ.\n")
+                    audio := make([]int16, (len(packet) - URTP_HEADER_SIZE) / URTP_SAMPLE_SIZE)
+                    // Copy in the bytes
+                    x := URTP_HEADER_SIZE
+                    for y := range audio {
+                        audio[y] = (int16(packet[x]) << 8) + int16(packet[x + 1])
+                        x += 2 
+                    }
+                    urtpDatagram.Audio = &audio
+                case UNICAM_COMPRESSED_16000_HZ:
+                    log.Printf("  audio coding:     UNICAM_COMPRESSED_16000_HZ.\n")
+                default:
+                    log.Printf("  audio coding:     !unknown!\n")
             }
-            urtpDatagram.Audio = &audio
         }
         log.Printf("URTP samples %d\n", len(*urtpDatagram.Audio))
         
@@ -117,8 +134,7 @@ func handleUrtpStream(data []byte) {
             // data, read the header bytes to determine the number of samples
             if tcpBuffer.Len() >= URTP_HEADER_SIZE {
                 header := tcpBuffer.Next(URTP_HEADER_SIZE)
-                urtpDatagramBytesRemaining = ((int(header[URTP_NUM_SAMPLES_OFFSET]) << 8) +
-                                              (int(header[URTP_NUM_SAMPLES_OFFSET + 1]))) * URTP_SAMPLE_SIZE
+                urtpDatagramBytesRemaining = ((int(header[URTP_NUM_BYTES_AUDIO_OFFSET]) << 8) + (int(header[URTP_NUM_BYTES_AUDIO_OFFSET + 1])))
                 log.Printf("TCP reassembly: URTP header %x (%d sample(s) expected).\n", header, urtpDatagramBytesRemaining / URTP_SAMPLE_SIZE)
                 urtpDatagram.Write(header)
                 if urtpDatagramBytesRemaining > URTP_DATAGRAM_SIZE - URTP_HEADER_SIZE {
@@ -202,9 +218,13 @@ func tcpServer(port string) {
                 currentServer = newServer
                 x, success := currentServer.(*net.TCPConn)
                 if success {
-                    err1 := x.SetReadBuffer(5200)
+                    err1 := x.SetReadBuffer(30000)
                     if err1 != nil {
                         log.Printf("Unable to set optimal read buffer size (%s).\n", err1.Error())
+                    }
+                    err1 = x.SetNoDelay(true)
+                    if err1 != nil {
+                        log.Printf("Unable to switch of Nagle algorithm (%s).\n", err1.Error())
                     }
                 } else {
                     log.Printf("Can't cast *net.Conn to *net.TCPConn in order to set optimal read buffer size.\n")
@@ -217,7 +237,7 @@ func tcpServer(port string) {
                     for numBytesIn, err := server.Read(line); (err == nil) && (numBytesIn > 0); numBytesIn, err = server.Read(line) {
                         handleUrtpStream(line[:numBytesIn])
                     }
-                    fmt.Printf("Connection closed.\n")
+                    fmt.Printf("[Connection to %s closed].\n", server.RemoteAddr().String())
                 }(currentServer)
             } else {
                 fmt.Fprintf(os.Stderr, "Error accepting connection (%s).\n", err.Error())        
