@@ -178,7 +178,7 @@ func handleGap(gap int, previousDatagram * UrtpDatagram) {
 
 // Process a URTP datagram
 func processDatagram(datagram * UrtpDatagram, savedDatagramList * list.List) {
-    audioBytes := make([]byte, len(*datagram.Audio) * URTP_SAMPLE_SIZE)
+    
     var previousDatagram *UrtpDatagram
     
     if savedDatagramList.Front() != nil {
@@ -191,19 +191,25 @@ func processDatagram(datagram * UrtpDatagram, savedDatagramList * list.List) {
     if (previousDatagram != nil) && (datagram.SequenceNumber != previousDatagram.SequenceNumber + 1) {
         handleGap(int(datagram.SequenceNumber - previousDatagram.SequenceNumber) * SAMPLES_PER_BLOCK, previousDatagram)
     }
-    
-    // Copy the received audio into the buffer    
-    for x, y := range *datagram.Audio {
-        for z := 0; z < URTP_SAMPLE_SIZE; z++ {
-            audioBytes[(x * URTP_SAMPLE_SIZE) + z] = byte(y >> ((uint(z) * 8)))
-        } 
-    }
-    log.Printf("Writing %d bytes to the audio buffer...\n", len(audioBytes))
-    pcmAudio.Write(audioBytes)
-    
-    // If the block is shorter than expected, handle that gap too
-    if len(*datagram.Audio) < SAMPLES_PER_BLOCK {
-        handleGap(SAMPLES_PER_BLOCK - len(*datagram.Audio), previousDatagram)        
+        
+        // Copy the received audio into the buffer    
+    if datagram.Audio != nil {
+        audioBytes := make([]byte, len(*datagram.Audio) * URTP_SAMPLE_SIZE)
+        for x, y := range *datagram.Audio {
+            for z := 0; z < URTP_SAMPLE_SIZE; z++ {
+                audioBytes[(x * URTP_SAMPLE_SIZE) + z] = byte(y >> ((uint(z) * 8)))
+            } 
+        }
+        log.Printf("Writing %d bytes to the audio buffer...\n", len(audioBytes))
+        pcmAudio.Write(audioBytes)
+        
+        // If the block is shorter than expected, handle that gap too
+        if len(*datagram.Audio) < SAMPLES_PER_BLOCK {
+            handleGap(SAMPLES_PER_BLOCK - len(*datagram.Audio), previousDatagram)        
+        }
+    } else {
+        // And if the audio is entirely missing, handle that
+        handleGap(SAMPLES_PER_BLOCK, previousDatagram)        
     }
 }
 
