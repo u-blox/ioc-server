@@ -47,7 +47,6 @@ const SAMPLES_PER_BLOCK int = SAMPLING_FREQUENCY * BLOCK_DURATION_MS / 1000
 
 // UNICAM parameters
 const UNICAM_SAMPLES_PER_BLOCK int = SAMPLING_FREQUENCY / 1000
-const UNICAM_CODED_SAMPLE_SIZE_BITS int = 8
 const UNICAM_CODED_SHIFT_SIZE_BITS int = 4
 
 // The URTP datagram paramegers
@@ -69,7 +68,8 @@ const IP_HEADER_OVERHEAD int = 40
 // The audio coding schemes
 const (
     PCM_SIGNED_16_BIT_16000_HZ = 0
-    UNICAM_COMPRESSED_16000_HZ = 1
+    UNICAM_COMPRESSED_8_BIT_16000_HZ = 1
+    UNICAM_COMPRESSED_10_BIT_16000_HZ = 2
     MAX_NUM_AUDIO_CODING_SCHEMES = iota
 )
 
@@ -103,6 +103,7 @@ var urtpPayloadSize int
 //--------------------------------------------------------------------
 
 // Decode PCM_SIGNED_16_BIT_16000_HZ data from a datagram
+// For details of the format, see the client code (ioc-client)
 func decodePcm(audioDataPcm []byte) *[]int16 {
     audio := make([]int16, len(audioDataPcm) / URTP_SAMPLE_SIZE)
     
@@ -116,8 +117,9 @@ func decodePcm(audioDataPcm []byte) *[]int16 {
     return &audio    
 }
 
-// Decode UNICAM_COMPRESSED_16000_HZ data from a datagram
-func decodeUnicam(audioDataUnicam []byte) *[]int16 {
+// Decode UNICAM_COMPRESSED_x_BIT_16000_HZ data from a datagram
+// For details of the format, see the client code (ioc-client)
+func decodeUnicam(audioDataUnicam []byte, sampleSizeBits int) *[]int16 {
     var numBlocks int
     var blockOffset int
     var blockCount int
@@ -126,9 +128,10 @@ func decodeUnicam(audioDataUnicam []byte) *[]int16 {
     var peakShift byte
     var sample int16
     var sourceIndex int
+    var compressedSampleBitShift uint = 0
     
     // Work out how much audio data is present
-    for x := 0; x < len(audioDataUnicam) * 8; x += UNICAM_SAMPLES_PER_BLOCK * UNICAM_CODED_SAMPLE_SIZE_BITS + UNICAM_CODED_SHIFT_SIZE_BITS {
+    for x := 0; x < len(audioDataUnicam) * 8; x += UNICAM_SAMPLES_PER_BLOCK * sampleSizeBits + UNICAM_CODED_SHIFT_SIZE_BITS {
         numBlocks++;
     }
     
@@ -138,12 +141,28 @@ func decodeUnicam(audioDataUnicam []byte) *[]int16 {
     log.Printf("UNICAM: %d byte(s) containing %d block(s), expanding to a total of %d samples(s) of uncompressed audio.\n", len(audioDataUnicam), numBlocks, len(audio))
     
     // Decode the blocks
-    for blockCount < numBlocks {
-        
+    for blockCount < numBlocks {        
         // Get the compressed values
         for x := 0; x < UNICAM_SAMPLES_PER_BLOCK; x++ {
-            audio[blockOffset + x] = int16(audioDataUnicam[sourceIndex])
-            sourceIndex++
+            if sampleSizeBits != 8 {
+                // Have to juggle bits to unpack 10-bit samples
+                // uint(0xFF) here to avoid sign extension, not sure if it's required
+                sample = int16(((audioDataUnicam[sourceIndex]) & byte((uint(0xFF) >> compressedSampleBitShift)))) << (compressedSampleBitShift + (uint(sampleSizeBits) - 8))
+                //log.Printf("UNICAM block %d:%02d, partial unpacked value %d (0x%x), from initial input value 0x%x.\n", blockCount, x, sample, sample, audioDataUnicam[sourceIndex])
+                sourceIndex++
+                sample |= int16(audioDataUnicam[sourceIndex] >> (8 - (compressedSampleBitShift + uint(sampleSizeBits) - 8)))                    
+                audio[blockOffset + x] = sample
+                //log.Printf("UNICAM block %d:%02d, unpacked value %d (0x%x) with a bit of the next input value 0x%x.\n", blockCount, x, sample, sample, audioDataUnicam[sourceIndex])
+                compressedSampleBitShift += uint(sampleSizeBits) - 8;
+                if (compressedSampleBitShift >= 8) {
+                    compressedSampleBitShift = 0;
+                    sourceIndex++
+                }
+            } else {
+                // Do it the easy way for 8 bit compression
+                audio[blockOffset + x] = int16(audioDataUnicam[sourceIndex])
+                sourceIndex++
+            }
         }
         
         // Get the shift value
@@ -165,8 +184,8 @@ func decodeUnicam(audioDataUnicam []byte) *[]int16 {
         for x := 0; x < UNICAM_SAMPLES_PER_BLOCK; x++ {
             // Check if the top bit is set and, if so, sign extend
             sample = audio[blockOffset + x]
-            if sample & (1 << (uint(UNICAM_CODED_SAMPLE_SIZE_BITS) - 1)) != 0 {
-                for y := uint(UNICAM_CODED_SAMPLE_SIZE_BITS); y < uint(URTP_SAMPLE_SIZE) * 8; y++ {
+            if sample & (1 << (uint(sampleSizeBits) - 1)) != 0 {
+                for y := uint(sampleSizeBits); y < uint(URTP_SAMPLE_SIZE) * 8; y++ {
                     sample |= (1 << y)
                 }
             }
@@ -185,6 +204,7 @@ func decodeUnicam(audioDataUnicam []byte) *[]int16 {
 }
 
 // Handle an incoming URTP datagram and send it off for processing
+// For details of the format, see the client code (ioc-client)
 func handleUrtpDatagram(packet []byte) {
     log.Printf("Packet of size %d byte(s) received.\n", len(packet))
 //    log.Printf("%s\n", hex.Dump(line[:numBytesIn]))
@@ -205,9 +225,12 @@ func handleUrtpDatagram(packet []byte) {
                 case PCM_SIGNED_16_BIT_16000_HZ:
                     log.Printf("  audio coding:     PCM_SIGNED_16_BIT_16000_HZ.\n")
                     urtpDatagram.Audio = decodePcm(packet[URTP_HEADER_SIZE:])
-                case UNICAM_COMPRESSED_16000_HZ:
-                    log.Printf("  audio coding:     UNICAM_COMPRESSED_16000_HZ.\n")
-                    urtpDatagram.Audio = decodeUnicam(packet[URTP_HEADER_SIZE:])
+                case UNICAM_COMPRESSED_8_BIT_16000_HZ:
+                    log.Printf("  audio coding:     UNICAM_COMPRESSED_8_BIT_16000_HZ.\n")
+                    urtpDatagram.Audio = decodeUnicam(packet[URTP_HEADER_SIZE:], 8)
+                case UNICAM_COMPRESSED_10_BIT_16000_HZ:
+                    log.Printf("  audio coding:     UNICAM_COMPRESSED_10_BIT_16000_HZ.\n")
+                    urtpDatagram.Audio = decodeUnicam(packet[URTP_HEADER_SIZE:], 10)
                 default:
                     log.Printf("  audio coding:     !unknown!\n")
             }
@@ -225,6 +248,7 @@ func handleUrtpDatagram(packet []byte) {
 }
 
 // Verify that a sequence of byte represents URTP beader
+// For details of the format, see the client code (ioc-client)
 func verifyUrtpHeader(header []byte) bool {
     var isHeader bool
     
@@ -252,6 +276,7 @@ func verifyUrtpHeader(header []byte) bool {
 }
 
 // Handle a stream of (e.g. TCP) bytes containing URTP datagrams
+// For details of the format, see the client code (ioc-client)
 func handleUrtpStream(data []byte) {
     var err error
     var item byte
