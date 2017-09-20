@@ -189,6 +189,7 @@ func processDatagram(datagram * UrtpDatagram, savedDatagramList * list.List) {
     
     // Handle the case where we have missed some datagrams
     if (previousDatagram != nil) && (datagram.SequenceNumber != previousDatagram.SequenceNumber + 1) {
+        log.Printf("Sequence number skip (expected %d, received %d).\n", previousDatagram.SequenceNumber + 1, datagram.SequenceNumber)
         handleGap(int(datagram.SequenceNumber - previousDatagram.SequenceNumber) * SAMPLES_PER_BLOCK, previousDatagram)
     }
         

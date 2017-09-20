@@ -46,7 +46,7 @@ const SAMPLING_FREQUENCY int = 16000
 const SAMPLES_PER_BLOCK int = SAMPLING_FREQUENCY * BLOCK_DURATION_MS / 1000
 
 // UNICAM parameters
-const UNICAM_SAMPLES_PER_BLOCK int = SAMPLING_FREQUENCY / 1000
+const SAMPLES_PER_UNICAM_BLOCK int = SAMPLING_FREQUENCY / 1000
 const UNICAM_CODED_SHIFT_SIZE_BITS int = 4
 
 // The URTP datagram paramegers
@@ -97,6 +97,7 @@ var urtpDatagram bytes.Buffer
 var urtpReassemblyState int = URTP_STATE_WAITING_SYNC
 var urtpByteCount int
 var urtpPayloadSize int
+var header bytes.Buffer
 
 //--------------------------------------------------------------------
 // Functions
@@ -131,19 +132,19 @@ func decodeUnicam(audioDataUnicam []byte, sampleSizeBits int) *[]int16 {
     var compressedSampleBitShift uint = 0
     
     // Work out how much audio data is present
-    for x := 0; x < len(audioDataUnicam) * 8; x += UNICAM_SAMPLES_PER_BLOCK * sampleSizeBits + UNICAM_CODED_SHIFT_SIZE_BITS {
+    for x := 0; x < len(audioDataUnicam) * 8; x += SAMPLES_PER_UNICAM_BLOCK * sampleSizeBits + UNICAM_CODED_SHIFT_SIZE_BITS {
         numBlocks++;
     }
     
     // Allocate space
-    audio := make([]int16, numBlocks * UNICAM_SAMPLES_PER_BLOCK)
+    audio := make([]int16, numBlocks * SAMPLES_PER_UNICAM_BLOCK)
     
     log.Printf("UNICAM: %d byte(s) containing %d block(s), expanding to a total of %d samples(s) of uncompressed audio.\n", len(audioDataUnicam), numBlocks, len(audio))
     
     // Decode the blocks
     for blockCount < numBlocks {        
         // Get the compressed values
-        for x := 0; x < UNICAM_SAMPLES_PER_BLOCK; x++ {
+        for x := 0; x < SAMPLES_PER_UNICAM_BLOCK; x++ {
             if sampleSizeBits != 8 {
                 // Have to juggle bits to unpack 10-bit samples
                 // uint(0xFF) here to avoid sign extension, not sure if it's required
@@ -181,7 +182,7 @@ func decodeUnicam(audioDataUnicam []byte, sampleSizeBits int) *[]int16 {
         
         //log.Printf("UNICAM block %d, shift value %d.\n", blockCount, shift)
         // Shift the values to uncompress them
-        for x := 0; x < UNICAM_SAMPLES_PER_BLOCK; x++ {
+        for x := 0; x < SAMPLES_PER_UNICAM_BLOCK; x++ {
             // Check if the top bit is set and, if so, sign extend
             sample = audio[blockOffset + x]
             if sample & (1 << (uint(sampleSizeBits) - 1)) != 0 {
@@ -195,7 +196,7 @@ func decodeUnicam(audioDataUnicam []byte, sampleSizeBits int) *[]int16 {
             //           blockCount, x, sample, sample, audio[blockOffset + x], audio[blockOffset + x])
         }
         
-        blockOffset += UNICAM_SAMPLES_PER_BLOCK
+        blockOffset += SAMPLES_PER_UNICAM_BLOCK
         blockCount++
     }
     log.Printf("UNICAM highest shift value was %d.\n", peakShift)
@@ -280,7 +281,6 @@ func verifyUrtpHeader(header []byte) bool {
 func handleUrtpStream(data []byte) {
     var err error
     var item byte
-    var header bytes.Buffer
     
     // Write all the data to the TCP buffer
     tcpBuffer.Write(data)
@@ -295,7 +295,7 @@ func handleUrtpStream(data []byte) {
                     header.WriteByte(item)
                     urtpReassemblyState = URTP_STATE_WAITING_AUDIO_CODING
                 } else {
-                    // log.Printf("TCP reassembly: awaiting initial sync byte but 0x%x isn't one (0x%x).\n", item, SYNC_BYTE)
+                    //log.Printf("TCP reassembly: awaiting initial sync byte but 0x%x isn't one (0x%x).\n", item, SYNC_BYTE)
                     header.Reset()
                     urtpReassemblyState = URTP_STATE_WAITING_SYNC
                 }
@@ -303,6 +303,7 @@ func handleUrtpStream(data []byte) {
                 // Look for the audio coding scheme and check it
                 if item < MAX_NUM_AUDIO_CODING_SCHEMES {
                     header.WriteByte(item)
+                    //log.Printf("TCP reassembly: audio coding scheme 0x%x.\n", item)
                     urtpReassemblyState = URTP_STATE_WAITING_SEQUENCE_NUMBER
                 } else {
                     log.Printf("TCP reassembly: audio coding scheme in the second byte (0x%0x) is not a valid audio coding scheme.\n", item)
@@ -313,6 +314,7 @@ func handleUrtpStream(data []byte) {
                 // Read in the two-byte sequence number
                 header.WriteByte(item)
                 urtpByteCount++
+                //log.Printf("TCP reassembly: sequence number byte %d is 0x%x.\n", urtpByteCount, item)
                 if urtpByteCount >= URTP_SEQUENCE_NUMBER_SIZE {
                     urtpByteCount = 0
                     urtpReassemblyState = URTP_STATE_WAITING_TIMESTAMP
@@ -321,6 +323,7 @@ func handleUrtpStream(data []byte) {
                 // Read in the eight-byte timestamp
                 header.WriteByte(item)
                 urtpByteCount++
+                //log.Printf("TCP reassembly: timestamp byte %d is 0x%x.\n", urtpByteCount, item)
                 if urtpByteCount >= URTP_TIMESTAMP_SIZE {
                     urtpByteCount = 0
                     urtpReassemblyState = URTP_STATE_WAITING_PAYLOAD_SIZE
