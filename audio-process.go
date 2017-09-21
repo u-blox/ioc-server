@@ -153,20 +153,22 @@ func createMp3Writer(mp3Audio *bytes.Buffer) *lame.LameWriter {
 
 // Handle a gap of a given number of samples in the input data
 func handleGap(gap int, previousDatagram * UrtpDatagram) {
+    var y int
     fill := make([]byte, gap * URTP_SAMPLE_SIZE)
-    var lastValue [URTP_SAMPLE_SIZE]byte
     
     log.Printf("Handling a gap of %d samples...\n", gap)
     if gap < SAMPLING_FREQUENCY * MAX_GAP_FILL_MILLISECONDS / 1000 {
         // TODO: for now just repeat the last sample we received
-        if (previousDatagram != nil) && (len(*previousDatagram.Audio) > 0) {        
-            for x := 0; x < len(lastValue); x++ {
-                lastValue[x] = byte((*previousDatagram.Audio)[len(*previousDatagram.Audio) - 1] >> ((uint(x) * 8)))
-            } 
-            for x := 0; x < len(fill); x += URTP_SAMPLE_SIZE {
-                for y := 0; y < len(lastValue); y++ {
-                    fill[x + y] = lastValue[y]
-                } 
+        if (previousDatagram != nil) && (len(*previousDatagram.Audio) > 0) {
+            for w := 0; w < len(fill); w += URTP_SAMPLE_SIZE {
+                x := (*previousDatagram.Audio)[y]
+                for z := 0; z < URTP_SAMPLE_SIZE; z++ {
+                    fill[w + z] = byte(x >> ((uint(z) * 8)))
+                }
+                y++
+                if y >= len(*previousDatagram.Audio) {
+                    y = 0
+                }
             } 
         }
         log.Printf("Writing %d bytes to the audio buffer...\n", len(fill))
