@@ -56,7 +56,7 @@ const MP3_REMOVABLE_AGE time.Duration = time.Minute * 5
 
 // The lag from the newest point in the playlist to the point
 // where a browser should begin playing from the playlist
-const MAX_PLAY_LAG time.Duration = time.Second * 20
+const MAX_PLAY_LAG time.Duration = time.Second * 10
 
 //--------------------------------------------------------------------
 // Variables

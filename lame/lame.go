@@ -98,6 +98,11 @@ func (e *Encoder) GetEncoderDelay() int {
     return int(retcode)    
 }
 
+func (e *Encoder) GetMp3FrameSize() int {
+    retcode := C.lame_get_framesize(e.handle)
+    return int(retcode)
+}
+
 func (e *Encoder) GetSizeMp3NotWritten() int {
     retcode := C.lame_get_size_mp3buffer(e.handle)
     return int(retcode)    
@@ -184,7 +189,7 @@ func (e *Encoder) Flush() []byte {
 	estimatedSize := 7200
 	out := make([]byte, estimatedSize)
 	cOut := (*C.uchar)(unsafe.Pointer(&out[0]))
-	bytesOut := C.int(C.lame_encode_flush_nogap(
+	bytesOut := C.int(C.lame_encode_flush(
 		e.handle,
 		cOut,
 		C.int(estimatedSize),
