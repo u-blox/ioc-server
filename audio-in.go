@@ -67,9 +67,9 @@ const IP_HEADER_OVERHEAD int = 40
 
 // The audio coding schemes
 const (
-    PCM_SIGNED_16_BIT_16000_HZ = 0
-    UNICAM_COMPRESSED_8_BIT_16000_HZ = 1
-    UNICAM_COMPRESSED_10_BIT_16000_HZ = 2
+    PCM_SIGNED_16_BIT = 0
+    UNICAM_COMPRESSED_8_BIT = 1
+    UNICAM_COMPRESSED_10_BIT = 2
     MAX_NUM_AUDIO_CODING_SCHEMES = iota
 )
 
@@ -103,7 +103,7 @@ var header bytes.Buffer
 // Functions
 //--------------------------------------------------------------------
 
-// Decode PCM_SIGNED_16_BIT_16000_HZ data from a datagram
+// Decode PCM_SIGNED_16_BIT data from a datagram
 // For details of the format, see the client code (ioc-client)
 func decodePcm(audioDataPcm []byte) *[]int16 {
     audio := make([]int16, len(audioDataPcm) / URTP_SAMPLE_SIZE)
@@ -223,14 +223,14 @@ func handleUrtpDatagram(packet []byte) {
         
         if (len(packet) > URTP_HEADER_SIZE) {
             switch (audioCodingScheme) {
-                case PCM_SIGNED_16_BIT_16000_HZ:
-                    log.Printf("  audio coding:     PCM_SIGNED_16_BIT_16000_HZ.\n")
+                case PCM_SIGNED_16_BIT:
+                    log.Printf("  audio coding:     PCM_SIGNED_16_BIT.\n")
                     urtpDatagram.Audio = decodePcm(packet[URTP_HEADER_SIZE:])
-                case UNICAM_COMPRESSED_8_BIT_16000_HZ:
-                    log.Printf("  audio coding:     UNICAM_COMPRESSED_8_BIT_16000_HZ.\n")
+                case UNICAM_COMPRESSED_8_BIT:
+                    log.Printf("  audio coding:     UNICAM_COMPRESSED_8_BIT.\n")
                     urtpDatagram.Audio = decodeUnicam(packet[URTP_HEADER_SIZE:], 8)
-                case UNICAM_COMPRESSED_10_BIT_16000_HZ:
-                    log.Printf("  audio coding:     UNICAM_COMPRESSED_10_BIT_16000_HZ.\n")
+                case UNICAM_COMPRESSED_10_BIT:
+                    log.Printf("  audio coding:     UNICAM_COMPRESSED_10_BIT.\n")
                     urtpDatagram.Audio = decodeUnicam(packet[URTP_HEADER_SIZE:], 10)
                 default:
                     log.Printf("  audio coding:     !unknown!\n")
